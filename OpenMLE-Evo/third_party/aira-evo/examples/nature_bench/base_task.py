@@ -4,6 +4,8 @@ import ast
 import hashlib
 import json
 import os
+import secrets
+import shutil
 import re
 import shlex
 import signal
@@ -139,6 +141,9 @@ class NatureBenchTask(Task):
         self.attempt_index = 0
         self._eval_service_registered = False
         self._eval_service_timer_started = False
+        # Opaque handle the eval service uses to address this task on /evaluate.
+        # Minted here and supplied at /register so the two calls agree.
+        self._eval_token = secrets.token_urlsafe(24)
         self._scm_task_root_cache: str | None = None
         self._import_preflight_cache: dict[str, str | None] = {}
 
@@ -1465,10 +1470,14 @@ done
     ) -> dict[str, Any]:
         if self._uses_scm():
             return self._remote_json_request(endpoint, payload, timeout=timeout)
+        headers = {"Content-Type": "application/json"}
+        control_token = os.environ.get("NATUREBENCH_CONTROL_TOKEN", "").strip()
+        if control_token:
+            headers["X-NatureBench-Control-Token"] = control_token
         request = urllib.request.Request(
             f"{self.eval_service_url}/{endpoint.lstrip('/')}",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
@@ -1495,6 +1504,7 @@ done
                 "timeout": self._solve_timeout_seconds(),
                 "out_dir": self._eval_service_out_dir_value(),
                 "batch_name": self.batch_name,
+                "eval_token": self._eval_token,
             }
             if bool(self.cfg.get("force_eval_register", False)):
                 payload["force"] = True
@@ -1518,12 +1528,33 @@ done
             )
             self._eval_service_timer_started = True
 
+    def _link_eval_service_workspace(self, output_dir: str | Path) -> None:
+        """Expose this attempt's output under the registered ``out_dir``.
+
+        The eval service scores ``<out_dir>/workspace/output`` rather than the
+        ``output_dir`` in the request body, while each attempt runs in its own
+        workspace. Repointing one symlink keeps ``out_dir`` — and the
+        ``submissions.jsonl`` history it holds — stable across attempts.
+        """
+        attempt_workspace = Path(output_dir).resolve().parent
+        link = self._eval_service_out_dir() / "workspace"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() or link.exists():
+            if link.is_symlink() or link.is_file():
+                link.unlink()
+            else:
+                shutil.rmtree(link)
+        link.symlink_to(attempt_workspace, target_is_directory=True)
+
     def _post_evaluate(self, output_dir: str | Path) -> dict[str, Any]:
         self._ensure_eval_service_registered()
+        if not self._uses_scm():
+            self._link_eval_service_workspace(output_dir)
         payload = {
             "task_name": self.task_name,
             "batch_name": self.batch_name,
             "output_dir": str(output_dir),
+            "eval_token": self._eval_token,
         }
         return self._post_json("evaluate", payload, timeout=self.eval_timeout)
 
