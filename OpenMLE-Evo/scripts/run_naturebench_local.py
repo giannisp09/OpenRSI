@@ -128,6 +128,20 @@ def _resolve_runtime_python(
     return path
 
 
+def _read_eval_control_token(naturebench_repo: Path) -> str:
+    """Read the token the eval service writes for its control endpoints.
+
+    NatureBench gates /register and the timer endpoints behind
+    ``X-NatureBench-Control-Token``. The service generates the token on first
+    start; the search controller needs it to register the task. It is kept out
+    of ``candidate_env_allowlist`` so generated code never sees it.
+    """
+    token_path = naturebench_repo / "eval_logs" / "eval_control_token"
+    if not token_path.is_file():
+        return ""
+    return token_path.read_text(encoding="utf-8").strip()
+
+
 def _health_url(host: str, port: int) -> str:
     return f"http://{host}:{port}/health"
 
@@ -546,12 +560,26 @@ def main() -> None:
                 flush=True,
             )
         elif model_base_url:
-            available = _fetch_model_ids(
-                model_base_url,
-                api_key=child_env["PRIMARY_KEY"],
-                timeout=args.model_ssh_start_timeout,
-            )
-            model_id = _select_model_id(model_id, available)
+            try:
+                available = _fetch_model_ids(
+                    model_base_url,
+                    api_key=child_env["PRIMARY_KEY"],
+                    timeout=args.model_ssh_start_timeout,
+                )
+            except (OSError, ValueError, urllib.error.URLError) as exc:
+                # The probe only exists to resolve/validate the model id. Some
+                # OpenAI-compatible providers gate /models behind headers the
+                # chat endpoint does not need, so an explicit --model-id is
+                # authoritative and the probe is advisory.
+                if not model_id:
+                    raise
+                print(
+                    f"Could not list models at {model_base_url} "
+                    f"({type(exc).__name__}); using --model-id {model_id} as given.",
+                    flush=True,
+                )
+            else:
+                model_id = _select_model_id(model_id, available)
             print(f"Using model {model_id} at {model_base_url}", flush=True)
 
         if _service_is_healthy(args.eval_host, args.eval_port):
@@ -591,6 +619,9 @@ def main() -> None:
                 f"http://{args.eval_host}:{args.eval_port}",
                 flush=True,
             )
+            control_token = _read_eval_control_token(naturebench_repo)
+            if control_token:
+                child_env["NATUREBENCH_CONTROL_TOKEN"] = control_token
 
         command = [
             sys.executable,
