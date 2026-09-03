@@ -1558,6 +1558,71 @@ done
         }
         return self._post_json("evaluate", payload, timeout=self.eval_timeout)
 
+    def _per_instance_feedback(self, eval_payload: dict[str, Any]) -> str:
+        """Render the per-instance score breakdown for the operator prompt.
+
+        ``aggregate_improvement`` averages every sub-dataset into one number.
+        On a multi-instance task that number goes flat once most instances
+        saturate, and the operators lose any signal about which instance still
+        has headroom. The breakdown is already computed by the eval service and
+        stored on the payload; this only surfaces it to the model.
+
+        Disabled by setting ``per_instance_feedback: false``, which restores
+        the aggregate-only prompt for A/B comparison.
+        """
+        if not bool(self.cfg.get("per_instance_feedback", True)):
+            return ""
+        improvements = eval_payload.get("per_instance_improvement") or {}
+        if len(improvements) < 2:
+            # Single-instance tasks add nothing beyond the aggregate.
+            return ""
+        scored = {
+            name: value
+            for name, value in (
+                (name, self._coerce_score(raw)) for name, raw in improvements.items()
+            )
+            if value is not None
+        }
+        # A uniform breakdown carries no signal the aggregate lacks. This is the
+        # common case for a crashed candidate, where every instance reports the
+        # same failure floor and the traceback is the only useful feedback.
+        if len(set(scored.values())) < 2:
+            return ""
+        raw_scores = eval_payload.get("raw_scores") or {}
+        weakest = min(scored, key=lambda name: scored[name])
+        lines = ["per_instance_improvement (vs published SOTA, higher is better):"]
+        for name in sorted(improvements):
+            value = scored.get(name)
+            if value is None:
+                lines.append(f"  {name}: not scored")
+                continue
+            metrics = raw_scores.get(name)
+            detail = ""
+            if isinstance(metrics, dict):
+                rendered = ", ".join(
+                    f"{metric}={metrics[metric]}"
+                    for metric in sorted(metrics)
+                    if metric != "error" and metrics[metric] is not None
+                )
+                if rendered:
+                    detail = f" ({rendered})"
+            marker = "  <- weakest, most remaining headroom" if name == weakest else ""
+            lines.append(f"  {name}: {value:+.4f}{detail}{marker}")
+        # Naming the weakest instance alone reads as permission to trade the
+        # others away, and the search does exactly that: pointing at the weak
+        # instance without stating the constraint collapsed preservation of the
+        # already-solved instances from 10/13 nodes to 1/15. The aggregate is a
+        # mean, so a regression on a solved instance costs more than the
+        # available gain on the weak one.
+        held = [name for name in sorted(scored) if name != weakest]
+        lines.append(
+            f"{weakest} holds the remaining headroom, but the aggregate is a "
+            f"mean: {', '.join(held)} are at or above SOTA and must be kept "
+            f"there. A regression on those outweighs any gain on {weakest}. "
+            f"Improve {weakest} without changing what already works."
+        )
+        return "\n".join(lines)
+
     def _annotate_eval_payload(
         self,
         run_payload: dict[str, Any],
@@ -1597,6 +1662,9 @@ done
             f"aggregate_improvement={aggregate}",
             f"best_aggregate_improvement={best}",
         ]
+        instance_feedback = self._per_instance_feedback(eval_payload)
+        if instance_feedback:
+            feedback_parts.append(instance_feedback)
         payload = {
             **run_payload,
             "status_code": status_code,
