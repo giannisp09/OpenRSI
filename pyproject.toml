@@ -1,0 +1,49 @@
+# Root of the OpenRSI uv workspace.
+#
+# This file is the single source of truth for the dependencies needed to run
+# `ctf_gym` together with the OpenMLE-Evo runtime. One command sets everything up:
+#
+#   uv sync
+#
+# uv creates ./.venv, fetches a matching Python interpreter if the machine does
+# not have one, and installs the workspace members in editable mode.
+
+[project]
+name = "openrsi"
+version = "0.1.0"
+description = "OpenRSI: recursive self-improvement research monorepo (CTF gym + OpenMLE evolutionary search)"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+
+dependencies = [
+  # Workspace members, resolved from the local checkout (see [tool.uv.sources]).
+  "openmle-tts-eval",  # OpenMLE-Evo/            -> tts_search
+  "aira-dojo",         # OpenMLE-Evo/third_party/aira-evo -> dojo
+  # Direct third-party dependencies of ctf_gym.
+  "fastapi>=0.110",    # ctf_gym/src/verifier/router.py
+  "uvicorn>=0.29",     # ctf_gym/tests/test_ctf_gym.py serves the verifier
+  "requests>=2.31",    # ctf_gym verifier client
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3.5"]
+
+[tool.uv]
+# `ctf_gym` uses PEP 420 implicit namespace packages (no __init__.py), so it is
+# imported from the repo root rather than installed. Nothing to build here; this
+# project exists only to pin and group the environment.
+package = false
+
+[tool.uv.sources]
+openmle-tts-eval = { workspace = true }
+aira-dojo = { workspace = true }
+
+[tool.uv.workspace]
+# Members are listed explicitly. OpenMLE-Gym and OpenMLE-ERL are deliberately
+# NOT members: they are independent projects with their own uv.lock files (and,
+# for OpenMLE-ERL/SFT, a different package index and mutually conflicting
+# extras). Set them up separately with `uv sync` inside their own directories.
+members = [
+  "OpenMLE-Evo",
+  "OpenMLE-Evo/third_party/aira-evo",
+]

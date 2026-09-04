@@ -167,12 +167,18 @@ cd OpenRSI
 
 OpenRSI contains several independently runnable stages rather than one synthetic top-level command. Each component manages its own environment and dependencies — start from the one that matches your goal:
 
+`OpenMLE-Evo` and `ctf_gym` share one [uv](https://docs.astral.sh/uv/) workspace at
+the repo root — `uv sync` builds their environment (and fetches Python 3.12) in one
+step. See [`VM-SETUP.md`](VM-SETUP.md). `OpenMLE-Gym` and `OpenMLE-ERL` remain
+separate projects with their own lockfiles.
+
 | Goal | Start here |
 | --- | --- |
 | Construct or evaluate executable task packages | [`OpenMLE-Gym/README.md`](OpenMLE-Gym/README.md) |
 | Generate or select SFT data and launch supervised training | [`OpenMLE-ERL/SFT/README.md`](OpenMLE-ERL/SFT/README.md) |
 | Configure and launch execution-grounded RL | [`OpenMLE-ERL/RL/README.md`](OpenMLE-ERL/RL/README.md) |
 | Run OpenMLE-Evo or a benchmark adapter | [`OpenMLE-Evo/README.md`](OpenMLE-Evo/README.md) |
+| Run the CTF gym task harness | [`CTF-GYM-SPEC.md`](CTF-GYM-SPEC.md) |
 
 ### Quick Start: Run One NatureBench Case Locally
 

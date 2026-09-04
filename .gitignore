@@ -4,6 +4,9 @@ venv/
 .runtime/
 env/
 
+# Local run output
+.logs/
+
 # Python bytecode / build artifacts
 __pycache__/
 *.py[cod]
