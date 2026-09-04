@@ -20,6 +20,12 @@ make test                                          # Ran 2 tests ... OK
 `uv sync` **downloads a matching Python for you**, so nothing else needs to be
 installed first — no `deadsnakes`, no `python3.12-venv`, no `pip install`.
 
+**Which VM should you rent?** See [`HARDWARE.md`](HARDWARE.md). Short version: the
+`ctf_gym` suite and a complete single-task NatureBench search both run on a
+**CPU-only** VM (8 vCPU / 32 GB / 100 GB, Ubuntu 22.04) when the model comes from
+a hosted API. You only need GPUs to self-host Frontis-MA1 or to reproduce
+MLE-Bench.
+
 ## 0. Prerequisites
 
 | Requirement | Why |
@@ -154,11 +160,70 @@ make test
 Expected: `Ran 2 tests ... OK` (~13s; the suite starts a local uvicorn server on
 port 18556). `make test` points `LOGGING_DIR` at `./.logs` for you.
 
-For the OpenMLE-Evo side, see `OpenMLE-Evo/README.md` — its entry point is
-`./scripts/run_standard.sh`. Run it with the workspace venv active, e.g.
-`cd OpenMLE-Evo && source ../.venv/bin/activate && ./scripts/run_standard.sh`.
+If that passes, the environment is correct and you are ready to run experiments.
 
-## 5. The other sub-projects
+## 5. Run your first experiment
+
+### Option A — CTF gym (no GPU, no model, no data)
+
+Already covered by `make test`. To exercise the benchmark targets as containers:
+
+```bash
+docker build -t deepred-target ctf_gym/benchmarks/deepred/target_service
+docker build -t exploitbench-324747822 ctf_gym/benchmarks/exploitbench/324747822
+```
+
+See [`CTF-GYM-SPEC.md`](CTF-GYM-SPEC.md) for the task and verifier contract.
+
+### Option B — One NatureBench task (no GPU, hosted model)
+
+The smallest complete OpenMLE-Evo search loop. Full instructions are in
+[`OpenMLE-Evo/benchmarks/naturebench_local_quick/README.md`](OpenMLE-Evo/benchmarks/naturebench_local_quick/README.md);
+the short path:
+
+```bash
+# 1. NatureBench data, cloned NEXT TO the OpenRSI checkout
+cd .. && git clone https://github.com/FrontisAI/NatureBench.git && cd OpenRSI
+
+# 2. Conda runtime for the generated candidate code (separate from .venv)
+cd OpenMLE-Evo
+conda env create -f environments/naturebench-local.yml
+cp .env.example .env
+
+# 3. Run one candidate against a hosted OpenAI-compatible endpoint
+export PRIMARY_KEY='your-api-key'
+../.venv/bin/python scripts/run_naturebench_local.py \
+  --naturebench-repo ../../NatureBench \
+  --conda-env naturebench-local \
+  --model-base-url https://model.example/v1 \
+  --model-id served-model-name \
+  --smoke
+```
+
+Note `../.venv/bin/python` — the workspace venv lives at the repo root now, not
+inside `OpenMLE-Evo/`. Drop `--smoke` for the full single-task search (4 h
+effective budget, 6 h wall-clock, up to 160 nodes); `--smoke` caps it at one
+candidate and a 30-minute budget.
+
+> ⚠️ **Run this on a disposable VM.** Conda isolates Python dependencies, not
+> files, networking, or host permissions — model-generated code executes with
+> your user's full access. Do not run it on a machine holding credentials or
+> anything you care about.
+
+### Option C — MLE-Bench
+
+Needs prepared Kaggle data, a sandbox speaking the `/api/v1/jobs` protocol, and a
+GPU sandbox worker. Start from `OpenMLE-Evo/docs/usage.md`; the entry point is
+`./scripts/run_standard.sh` (or `run_multi_gpu.sh` for the async profile), run
+with the workspace venv active:
+
+```bash
+cd OpenMLE-Evo && source ../.venv/bin/activate && ./scripts/run_standard.sh
+```
+
+See [`HARDWARE.md`](HARDWARE.md) §3 before committing to this one.
+
+## 6. The other sub-projects
 
 `OpenMLE-Gym` and `OpenMLE-ERL/SFT` are **not** workspace members. They are
 independent projects with their own `uv.lock` files — and `OpenMLE-ERL/SFT` uses
@@ -173,7 +238,7 @@ cd OpenMLE-ERL/SFT && uv sync    # see its README for the extras to pick
 `OpenMLE-ERL/RL` installs inside a SLIME runtime image; see
 `OpenMLE-ERL/RL/README.md`.
 
-## 6. Git remotes on the VM
+## 7. Git remotes on the VM
 
 A clone of the private repo gets `origin` pointing at it, which is what you
 want. To also track the public upstream:

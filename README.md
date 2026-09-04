@@ -169,8 +169,9 @@ OpenRSI contains several independently runnable stages rather than one synthetic
 
 `OpenMLE-Evo` and `ctf_gym` share one [uv](https://docs.astral.sh/uv/) workspace at
 the repo root — `uv sync` builds their environment (and fetches Python 3.12) in one
-step. See [`VM-SETUP.md`](VM-SETUP.md). `OpenMLE-Gym` and `OpenMLE-ERL` remain
-separate projects with their own lockfiles.
+step. See [`VM-SETUP.md`](VM-SETUP.md) to install, and [`HARDWARE.md`](HARDWARE.md)
+for what machine each experiment needs (the smallest real run needs **no GPU**).
+`OpenMLE-Gym` and `OpenMLE-ERL` remain separate projects with their own lockfiles.
 
 | Goal | Start here |
 | --- | --- |

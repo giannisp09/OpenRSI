@@ -8,6 +8,35 @@ The `CTFGym` provides a unified interface for the OpenMLE search loop. The searc
 
 By treating all CTF challenges as a "search problem over programs," `CTFGym` allows OpenMLE to evaluate if an agent can recursively improve its exploitation capabilities across diverse cybersecurity domains.
 
+## 1b. Running it
+
+The gym is CPU-only; no GPU and no model service are needed for the test suite.
+Dependencies come from the uv workspace at the repository root:
+
+```bash
+uv sync
+make test        # Ran 2 tests ... OK
+```
+
+`make test` sets `LOGGING_DIR` (which `dojo` requires at import time) and runs
+from the repository root, which matters because `ctf_gym` uses PEP 420 implicit
+namespace packages. The equivalent by hand:
+
+```bash
+export LOGGING_DIR=./.logs && mkdir -p "$LOGGING_DIR"
+uv run python -m unittest ctf_gym.tests.test_ctf_gym -v
+```
+
+The benchmark targets build as plain `ubuntu:24.04` containers and need Docker:
+
+```bash
+docker build -t deepred-target ctf_gym/benchmarks/deepred/target_service
+docker build -t exploitbench-324747822 ctf_gym/benchmarks/exploitbench/324747822
+```
+
+See [`VM-SETUP.md`](VM-SETUP.md) for full setup and [`HARDWARE.md`](HARDWARE.md)
+for sizing.
+
 ## 2. Extensible Directory Structure
 We structure the gym so that adding a new benchmark (like ExploitBench, DeepRed, or AgentSec-Bench) just means adding a new folder under `benchmarks/` and a corresponding verifier.
 

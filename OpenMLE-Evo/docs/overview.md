@@ -32,6 +32,10 @@ Datasets, NatureBench task packages and eval service, leaderboard assets, model 
 
 ## Quick start
 
+Preferred: the uv workspace at the repository root (`uv sync` from there
+installs this project and `third_party/aira-evo` editable, and fetches Python
+3.12). The directory-scoped pip flow remains supported:
+
 ```bash
 cd OpenMLE-Evo
 python3.12 -m venv .venv

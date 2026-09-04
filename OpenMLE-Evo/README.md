@@ -25,6 +25,20 @@ MLE-Bench and NatureBench Lite-v2 are parallel benchmark adapters over one share
 
 ## Quick Start
 
+Dependencies are managed by the uv workspace at the repository root, which
+installs this project and `third_party/aira-evo` in editable mode:
+
+```bash
+cd ..            # repository root
+uv sync          # creates ../.venv, fetches Python 3.12 if needed
+cd OpenMLE-Evo
+source ../.venv/bin/activate
+cp .env.example .env
+```
+
+See [`../VM-SETUP.md`](../VM-SETUP.md). The standalone pip flow below still
+works if you want an environment scoped to this directory only:
+
 ```bash
 cd OpenMLE-Evo
 python3.12 -m venv .venv

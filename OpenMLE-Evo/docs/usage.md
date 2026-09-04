@@ -6,7 +6,7 @@ NatureBench Lite-v2 uses the same runtime but has its own data, eval service, an
 
 This directory provides the search and evaluation orchestration code for OpenMLE-Evo. It does not launch or serve models, prepare MLE-Bench data, or ship sandbox images. Before running, you must already have:
 
-1. Python 3.11 or 3.12;
+1. Python 3.11 or 3.12 (`uv sync` at the repository root provides this automatically);
 2. an OpenAI-compatible model service;
 3. a GPU/CPU sandbox compatible with the `/api/v1/jobs` protocol;
 4. the evaluation parquet, prepared task data, and leaderboard metadata;
