@@ -1,0 +1,19 @@
+DGA Domain Detection task — data attribution
+=============================================
+
+Source dataset: DGA_domains_dataset (sample variant, dga_domains_sample.csv)
+  Mirror: https://github.com/chrmor/DGA_domains_dataset
+  Composition: benign domains from the Alexa top-sites list; DGA (malware-
+  generated) domains from the Netlab 360 DGA feed, spanning 25+ malware
+  families (Conficker, Cryptolocker, Emotet, Gozi, Necurs, Ramnit, Tinba,
+  Suppobox, and others).
+
+The raw CSV is headerless with columns (label, family, domain). Only the
+`domain` string and a binary label (`dga` -> 1, `legit` -> 0) are exported here;
+the `family` column is dropped because it leaks the binary label. Domain strings
+are unchanged. The held-out test labels are kept under
+evaluation/ground_truth/ and are not part of the visible task inputs.
+
+Underlying sources (Alexa, Netlab 360 OpenData) are provided for research use;
+consult the mirror repository for details. This package is for research/
+benchmarking of the OpenMLE-Evo self-improvement loop on cybersecurity ML tasks.

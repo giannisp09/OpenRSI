@@ -1,0 +1,20 @@
+Phishing-URL Detection task — data attribution
+================================================
+
+Source dataset: "Phishing websites dataset" (small variant, dataset_small.csv)
+  Grega Vrbancic, Iztok Fister Jr., Vili Podgorelec.
+  Mirror: https://github.com/GregaVrbancic/Phishing-Dataset
+  Original (Mendeley Data): "Phishing Dataset for Machine Learning:
+  Feature Evaluation" — https://data.mendeley.com/datasets/72ptz43s9v
+
+The dataset provides 111 numeric URL-derived features per sample and a binary
+`phishing` label. It is redistributed by the authors for research use; consult
+the source repository / Mendeley record for the exact license terms.
+
+Only a stratified train/test split and a column rename (`phishing` -> `label`
+in train.csv) are applied here; feature values are unchanged. The held-out test
+labels are kept under evaluation/ground_truth/ and are not part of the visible
+task inputs.
+
+This package is for research/benchmarking of the OpenMLE-Evo self-improvement
+loop on cybersecurity ML tasks.

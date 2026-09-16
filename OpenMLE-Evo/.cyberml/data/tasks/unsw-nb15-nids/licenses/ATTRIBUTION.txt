@@ -1,0 +1,24 @@
+UNSW-NB15 Network Intrusion Detection task — data attribution
+==============================================================
+
+Source dataset: UNSW-NB15 (testing-set CSV)
+  Nour Moustafa and Jill Slay, Australian Centre for Cyber Security (ACCS),
+  UNSW Canberra. "UNSW-NB15: a comprehensive data set for network intrusion
+  detection systems," MilCIS 2015.
+  Original: https://research.unsw.edu.au/projects/unsw-nb15-dataset
+  Mirror used here: https://github.com/Nir-J/ML-Projects
+  (UNSW-Network_Packet_Classification/UNSW_NB15_testing-set.csv)
+
+The dataset provides labelled network-flow records for intrusion detection. It is
+distributed for academic/research use; consult the ACCS project page for the
+exact terms. The mirror repository carries no explicit license of its own.
+
+Only the following transforms are applied here: a stratified train/test split,
+dropping the `id` and `attack_cat` columns (the latter to avoid leaking the
+binary label), casting `proto`/`service`/`state` to string, and exporting the
+binary target as `label`. Feature values are otherwise unchanged. The held-out
+test labels are kept under evaluation/ground_truth/ and are not part of the
+visible task inputs.
+
+This package is for research/benchmarking of the OpenMLE-Evo self-improvement
+loop on cybersecurity ML tasks.

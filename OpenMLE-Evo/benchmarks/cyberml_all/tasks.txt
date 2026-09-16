@@ -1,0 +1,6 @@
+nsl-kdd-nids
+unsw-nb15-nids
+phishing-url
+dga-domains-dns
+clamp-pe-malware
+tuandromd-android

@@ -1,0 +1,13 @@
+# Generated / runtime artifacts — regenerate with the tools, don't commit.
+cache/
+paper/
+local_naturebench/eval_logs/
+
+# Raw upstream download caches (rebuilt by tools/prepare_*.py).
+data/tasks/.*_cache/
+
+# The built task datasets (train.csv / x_test.csv / ground_truth) ARE committed
+# so the repo runs on a fresh VM without re-downloading. To keep the repo lean
+# instead, uncomment the next line and rebuild with the prepare scripts (Step 0):
+# data/tasks/*/problem/data/
+# data/tasks/*/evaluation/ground_truth/

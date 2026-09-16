@@ -1,0 +1,17 @@
+Dataset: NSL-KDD
+Source: Canadian Institute for Cybersecurity (CIC), University of New Brunswick.
+  https://www.unb.ca/cic/datasets/nsl.html
+
+NSL-KDD is a revised version of the KDD Cup 1999 dataset. Please cite:
+
+  M. Tavallaee, E. Bagheri, W. Lu, and A. A. Ghorbani, "A Detailed Analysis of
+  the KDD CUP 99 Data Set," Second IEEE Symposium on Computational Intelligence
+  for Security and Defense Applications (CISDA), 2009.
+
+The raw files are fetched at build time by ../../tools/prepare_nsl_kdd.py from a
+public mirror; they are not redistributed in this repository. Verify the CIC
+terms of use before redistributing derived splits.
+
+The per-family splits, binary label mapping, metric definition, and SOTA/baseline
+anchors in this package are original to OpenRSI and are provided for research use
+under the repository's license (CC BY-NC 4.0).

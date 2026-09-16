@@ -39,6 +39,44 @@ REQUIRED_LOCAL_PACKAGES = {"numpy", "scipy", "pandas", "scikit-learn"}
 PACKAGE_INSPECTION_MARKER = "__NATUREBENCH_LOCAL_PACKAGES__="
 
 
+def _load_dotenv(*candidates: Path) -> list[str]:
+    """Populate os.environ from the first existing .env file.
+
+    Reads simple ``KEY=VALUE`` lines (``export KEY=VALUE`` and ``#`` comments are
+    tolerated; surrounding single/double quotes are stripped). A variable already
+    present in the environment is NOT overwritten, so an explicit ``export`` in the
+    shell still wins over the file. Returns the names of the keys it set (values
+    are never printed). This lets ``PRIMARY_KEY`` (and the model flags) live in a
+    local ``.env`` instead of having to be exported every session.
+    """
+    loaded: list[str] = []
+    for path in candidates:
+        try:
+            if not path.is_file():
+                continue
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            if key and key not in os.environ:
+                os.environ[key] = value
+                loaded.append(key)
+        break  # only the first existing file is used
+    return loaded
+
+
 def _read_task_set(path: Path) -> list[str]:
     tasks = [
         line.strip()
@@ -432,6 +470,12 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+    loaded_keys = _load_dotenv(Path.cwd() / ".env", REPO_ROOT / ".env")
+    if loaded_keys:
+        print(
+            "Loaded from .env: " + ", ".join(sorted(loaded_keys)) + " (values hidden)",
+            flush=True,
+        )
     if args.model_ssh_host and args.model_ssh_port is None:
         raise ValueError("--model-ssh-port is required with --model-ssh-host")
     naturebench_repo = _resolve_naturebench_repo(args.naturebench_repo)

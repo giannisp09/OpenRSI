@@ -1,0 +1,21 @@
+TUANDROMD Android Malware Detection task — data attribution
+============================================================
+
+Source dataset: "TUANDROMD" (Tezpur University Android Malware Dataset)
+  Parthajit Borah, D.K. Bhattacharyya, J.K. Kalita.
+  UCI Machine Learning Repository, dataset id 855:
+  https://archive.ics.uci.edu/dataset/855/tuandromd
+  File: https://archive.ics.uci.edu/ml/machine-learning-databases/00622/TUANDROMD.csv
+
+The dataset provides 241 binary permission / API-call presence features per
+Android app and a `Label` column (`malware` / `goodware`). It is redistributed by
+UCI for research use; consult the UCI record for the exact license terms.
+
+Preprocessing applied here: one source row with an empty `Label` is dropped; the
+`Label` strings are mapped `malware` -> 1, `goodware` -> 0 and the column is
+exported as `label`; a stratified train/test split is applied. Feature values are
+unchanged. The held-out test labels are kept under evaluation/ground_truth/ and
+are not part of the visible task inputs.
+
+This package is for research/benchmarking of the OpenMLE-Evo self-improvement
+loop on cybersecurity ML tasks.

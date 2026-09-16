@@ -1,0 +1,56 @@
+{
+  "task_name": "DGA Domain Detection",
+  "workflow_topology": "strict_single_step",
+  "methodology_paradigm": "general_ml_application",
+  "tooling_metadata": null,
+  "domain_metadata": {
+    "primary_domain": "Cybersecurity",
+    "sub_domain": "DNS / Malware C2 Detection",
+    "domain_tags": [
+      "DGA detection",
+      "DNS security",
+      "domain generation",
+      "string features",
+      "feature engineering",
+      "binary classification"
+    ]
+  },
+  "compute_resource_requirements": {
+    "cpu_compute": {
+      "severity": "low",
+      "quantity_text": "Standard personal machine; runs on CPU"
+    },
+    "gpu_compute": {
+      "severity": "low",
+      "quantity_text": "Optional; a char-level model may use MPS/CUDA"
+    },
+    "runtime": {
+      "severity": "short",
+      "quantity_text": "~1 minute per candidate with engineered features"
+    }
+  },
+  "performance_entries": [
+    {
+      "dataset_name": "main",
+      "metrics": [
+        {
+          "name": "Detection F1-Score",
+          "is_primary": true,
+          "metric_direction": "higher_is_better",
+          "source_description": "Binary DGA-vs-legit F1 on a stratified 20% test split",
+          "unit": null,
+          "sota_score": [
+            {
+              "value": "0.9700",
+              "method": "Char-level features / n-gram model (illustrative anchor)"
+            }
+          ],
+          "baseline_score": {
+            "value": "0.6673",
+            "method": "Weak LR on 7 hand-built lexical features"
+          }
+        }
+      ]
+    }
+  ]
+}

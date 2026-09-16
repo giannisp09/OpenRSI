@@ -1,0 +1,121 @@
+{
+  "task_name": "NSL-KDD Network Intrusion Detection (per-family)",
+  "workflow_topology": "strict_single_step",
+  "methodology_paradigm": "general_ml_application",
+  "tooling_metadata": null,
+  "domain_metadata": {
+    "primary_domain": "Cybersecurity",
+    "sub_domain": "Network Intrusion Detection",
+    "domain_tags": [
+      "intrusion detection",
+      "network security",
+      "NSL-KDD",
+      "anomaly detection",
+      "supervised classification"
+    ]
+  },
+  "compute_resource_requirements": {
+    "cpu_compute": {
+      "severity": "low",
+      "quantity_text": "Standard personal machine; runs on CPU"
+    },
+    "gpu_compute": {
+      "severity": "low",
+      "quantity_text": "Optional; Apple MPS / CUDA usable for DL models"
+    },
+    "runtime": {
+      "severity": "short",
+      "quantity_text": "~1-3 minutes per candidate with sklearn models"
+    }
+  },
+  "performance_entries": [
+    {
+      "dataset_name": "dos",
+      "metrics": [
+        {
+          "name": "Detection F1-Score",
+          "is_primary": true,
+          "metric_direction": "higher_is_better",
+          "source_description": "Binary normal-vs-attack F1 on KDDTest+ subset",
+          "unit": null,
+          "sota_score": [
+            {
+              "value": "0.9950",
+              "method": "Strong tree ensemble (illustrative anchor)"
+            }
+          ],
+          "baseline_score": {
+            "value": "0.8855",
+            "method": "Weak logistic-regression baseline"
+          }
+        }
+      ]
+    },
+    {
+      "dataset_name": "probe",
+      "metrics": [
+        {
+          "name": "Detection F1-Score",
+          "is_primary": true,
+          "metric_direction": "higher_is_better",
+          "source_description": "Binary normal-vs-attack F1 on KDDTest+ subset",
+          "unit": null,
+          "sota_score": [
+            {
+              "value": "0.9950",
+              "method": "Strong tree ensemble (illustrative anchor)"
+            }
+          ],
+          "baseline_score": {
+            "value": "0.8699",
+            "method": "Weak logistic-regression baseline"
+          }
+        }
+      ]
+    },
+    {
+      "dataset_name": "r2l",
+      "metrics": [
+        {
+          "name": "Detection F1-Score",
+          "is_primary": true,
+          "metric_direction": "higher_is_better",
+          "source_description": "Binary normal-vs-attack F1 on KDDTest+ subset",
+          "unit": null,
+          "sota_score": [
+            {
+              "value": "0.9000",
+              "method": "Strong tree ensemble (illustrative anchor)"
+            }
+          ],
+          "baseline_score": {
+            "value": "0.0340",
+            "method": "Weak logistic-regression baseline"
+          }
+        }
+      ]
+    },
+    {
+      "dataset_name": "u2r",
+      "metrics": [
+        {
+          "name": "Detection F1-Score",
+          "is_primary": true,
+          "metric_direction": "higher_is_better",
+          "source_description": "Binary normal-vs-attack F1 on KDDTest+ subset",
+          "unit": null,
+          "sota_score": [
+            {
+              "value": "0.9000",
+              "method": "Strong tree ensemble (illustrative anchor)"
+            }
+          ],
+          "baseline_score": {
+            "value": "0.5714",
+            "method": "Weak logistic-regression baseline"
+          }
+        }
+      ]
+    }
+  ]
+}

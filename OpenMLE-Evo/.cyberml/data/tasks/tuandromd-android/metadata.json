@@ -1,0 +1,56 @@
+{
+  "task_name": "TUANDROMD Android Malware Detection",
+  "workflow_topology": "strict_single_step",
+  "methodology_paradigm": "general_ml_application",
+  "tooling_metadata": null,
+  "domain_metadata": {
+    "primary_domain": "Cybersecurity",
+    "sub_domain": "Malware Detection",
+    "domain_tags": [
+      "android malware",
+      "static analysis",
+      "permissions",
+      "API calls",
+      "binary classification",
+      "TUANDROMD"
+    ]
+  },
+  "compute_resource_requirements": {
+    "cpu_compute": {
+      "severity": "low",
+      "quantity_text": "Standard personal machine; runs on CPU"
+    },
+    "gpu_compute": {
+      "severity": "low",
+      "quantity_text": "Optional; Apple MPS / CUDA usable for DL models"
+    },
+    "runtime": {
+      "severity": "short",
+      "quantity_text": "~1 minute per candidate with sklearn models"
+    }
+  },
+  "performance_entries": [
+    {
+      "dataset_name": "main",
+      "metrics": [
+        {
+          "name": "Detection F1-Score",
+          "is_primary": true,
+          "metric_direction": "higher_is_better",
+          "source_description": "Binary goodware-vs-malware F1 on a stratified 20% test split",
+          "unit": null,
+          "sota_score": [
+            {
+              "value": "0.9990",
+              "method": "Strong tree ensemble (illustrative anchor)"
+            }
+          ],
+          "baseline_score": {
+            "value": "0.9951",
+            "method": "Weak logistic-regression baseline"
+          }
+        }
+      ]
+    }
+  ]
+}
