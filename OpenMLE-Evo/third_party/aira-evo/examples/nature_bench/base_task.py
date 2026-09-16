@@ -1544,7 +1544,14 @@ done
                 link.unlink()
             else:
                 shutil.rmtree(link)
-        link.symlink_to(attempt_workspace, target_is_directory=True)
+        try:
+            link.symlink_to(attempt_workspace, target_is_directory=True)
+        except OSError:
+            # Some filesystems (e.g. the Google Drive FUSE mount used on Colab)
+            # do not support symlinks and raise EOPNOTSUPP. The attempt's output
+            # is already fully written by the time we get here, so fall back to
+            # copying the workspace so the eval service can still read it.
+            shutil.copytree(attempt_workspace, link)
 
     def _post_evaluate(self, output_dir: str | Path) -> dict[str, Any]:
         self._ensure_eval_service_registered()
