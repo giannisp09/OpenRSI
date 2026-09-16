@@ -11,6 +11,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -567,11 +568,25 @@ class NatureBenchTask(Task):
         if configured:
             return Path(str(configured)).expanduser().resolve()
         return (
-            self._workspace_root()
+            self._eval_service_root()
             / "_eval_service"
             / self._safe_path_component(self.batch_name)
             / self._safe_path_component(self.task_name)
         ).resolve()
+
+    def _eval_service_root(self) -> Path:
+        """Local root for the eval-service scratch workspace.
+
+        ``_link_eval_service_workspace`` symlinks ``<out_dir>/workspace`` to
+        each attempt and the local eval service reads it back on this same
+        machine, so this dir is machine-local scratch, not durable output.
+        ``workspace_root`` may sit on a filesystem without symlink support
+        (e.g. the Google Drive FUSE mount on Colab), which breaks that link,
+        so the scratch defaults to local temp disk. The actual attempt
+        outputs still live under ``workspace_root``. Override with the
+        ``eval_service_out_dir`` config key if a specific location is needed.
+        """
+        return Path(tempfile.gettempdir()) / "airaevo"
 
     def _eval_service_out_dir_value(self) -> str:
         if self._uses_scm():
@@ -1539,23 +1554,49 @@ done
         attempt_workspace = Path(output_dir).resolve().parent
         link = self._eval_service_out_dir() / "workspace"
         link.parent.mkdir(parents=True, exist_ok=True)
-        if link.is_symlink() or link.exists():
-            if link.is_symlink() or link.is_file():
-                link.unlink()
-            else:
-                shutil.rmtree(link)
+        self._remove_path(link)
         try:
             link.symlink_to(attempt_workspace, target_is_directory=True)
         except OSError:
-            # Some filesystems (e.g. the Google Drive FUSE mount used on Colab)
-            # do not support symlinks and raise EOPNOTSUPP. The attempt's output
-            # is already fully written by the time we get here, so fall back to
-            # copying the workspace so the eval service can still read it.
-            # Drive's FUSE mount has lazy exists() semantics, so the removal
-            # above may not have taken effect; dirs_exist_ok merges over any
-            # residual directory instead of raising FileExistsError.
-            shutil.rmtree(link, ignore_errors=True)
-            shutil.copytree(attempt_workspace, link, dirs_exist_ok=True)
+            # Filesystems without symlink support raise EOPNOTSUPP (e.g. an
+            # eval_service_out_dir explicitly pointed at a Google Drive mount).
+            # The attempt output is already written, so copy it instead. We use
+            # a plain byte copy rather than shutil.copytree because such mounts
+            # also report unreliable inode numbers, which trips copytree's
+            # samefile() guard on genuinely distinct files.
+            self._copy_tree_bytes(attempt_workspace, link)
+
+    @staticmethod
+    def _remove_path(path: Path) -> None:
+        """Best-effort removal of a file, symlink, or directory tree."""
+        try:
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _copy_tree_bytes(src: Path, dst: Path) -> None:
+        """Recursively copy ``src`` into ``dst`` via raw byte streams.
+
+        Avoids shutil's samefile()/inode checks, which are unreliable on FUSE
+        mounts such as Google Drive, and tolerates a partially-present dst.
+        """
+        src = Path(src)
+        dst = Path(dst)
+        for root, _dirs, files in os.walk(src):
+            rel = Path(root).relative_to(src)
+            target_dir = dst / rel
+            target_dir.mkdir(parents=True, exist_ok=True)
+            for name in files:
+                source_file = Path(root) / name
+                dest_file = target_dir / name
+                if os.path.abspath(source_file) == os.path.abspath(dest_file):
+                    continue
+                with open(source_file, "rb") as fsrc, open(dest_file, "wb") as fdst:
+                    shutil.copyfileobj(fsrc, fdst)
 
     def _post_evaluate(self, output_dir: str | Path) -> dict[str, Any]:
         self._ensure_eval_service_registered()
