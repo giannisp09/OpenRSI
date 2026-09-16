@@ -6,6 +6,7 @@
 
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -32,13 +33,24 @@ NUM_RETRIES_ENV = "AIRA_LITELLM_NUM_RETRIES"
 # prompt would exceed the model's context window, the backend transparently
 # shrinks `max_tokens` to fit rather than letting the whole task abort with a
 # non-retryable ContextWindowExceededError.
+#
+# The prompt size is taken from the serving endpoint's own tokenizer when it
+# exposes one (vLLM's `POST /tokenize`, which also reports `max_model_len`).
+# Otherwise litellm's local estimate is used; for models litellm does not know
+# that estimate comes from OpenAI's tiktoken and can undercount a Qwen/Llama
+# prompt by a few percent, so an extra proportional margin is reserved on top of
+# the fixed one.
 CONTEXT_WINDOW_ENVS = ("AIRA_LITELLM_CONTEXT_WINDOW", "AIRA_LITELLM_MODEL_MAX_LEN")
-TOKEN_MARGIN_ENV = "AIRA_LITELLM_TOKEN_MARGIN"  # reserved headroom for tokenizer drift
+TOKEN_MARGIN_ENV = "AIRA_LITELLM_TOKEN_MARGIN"  # fixed headroom (always reserved)
+TOKEN_MARGIN_PCT_ENV = "AIRA_LITELLM_TOKEN_MARGIN_PCT"  # extra headroom when the count is estimated
 MIN_OUTPUT_TOKENS_ENV = "AIRA_LITELLM_MIN_OUTPUT_TOKENS"  # never shrink output below this
 CONTEXT_RETRIES_ENV = "AIRA_LITELLM_CONTEXT_RETRIES"  # reactive retries on window errors
+REMOTE_TOKENIZE_ENV = "AIRA_LITELLM_REMOTE_TOKENIZE"  # ask the server for exact prompt counts
 DEFAULT_TOKEN_MARGIN = 128
+DEFAULT_TOKEN_MARGIN_PCT = 0.10
 DEFAULT_MIN_OUTPUT_TOKENS = 512
 DEFAULT_CONTEXT_RETRIES = 4
+TOKENIZE_TIMEOUT = 15.0
 
 
 # Configure logging
@@ -153,7 +165,13 @@ class LiteLLMClient:
         else:
             self.model_prefix = "openai/"
 
+        # Name the server knows the model by (no litellm provider prefix).
+        self.served_model = self.model
         self.model = self.model_prefix + self.model
+
+        # Lazily discovered facts about the serving endpoint's tokenizer.
+        self._tokenize_available: Optional[bool] = None
+        self._server_max_model_len: Optional[int] = None
 
         logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -254,9 +272,9 @@ class LiteLLMClient:
     def _resolve_context_window(self) -> Optional[int]:
         """Best-effort lookup of the model's total context window (in tokens).
 
-        Prefers an explicit env override (useful for self-hosted models that
-        litellm does not know about), then falls back to litellm's registry.
-        Returns None when the window cannot be determined.
+        Prefers an explicit env override, then the length the serving endpoint
+        reported about itself (see `_count_prompt_tokens_remote`), then
+        litellm's registry. Returns None when the window cannot be determined.
         """
         for env_name in CONTEXT_WINDOW_ENVS:
             raw = os.getenv(env_name)
@@ -265,6 +283,8 @@ class LiteLLMClient:
                     return int(raw)
                 except ValueError:
                     logger.warning("Ignoring non-integer %s=%r", env_name, raw)
+        if self._server_max_model_len:
+            return self._server_max_model_len
         try:
             info = litellm.get_model_info(self.model) or {}
         except Exception:
@@ -277,6 +297,78 @@ class LiteLLMClient:
                 except (TypeError, ValueError):
                     pass
         return None
+
+    def _tokenize_url(self) -> Optional[str]:
+        """`/tokenize` endpoint next to the OpenAI-compatible `/v1` base URL."""
+        base = str(self.base_url or "").strip().rstrip("/")
+        if not base:
+            return None
+        if base.endswith("/v1"):
+            base = base[: -len("/v1")]
+        return base + "/tokenize"
+
+    def _count_prompt_tokens_remote(
+        self,
+        messages: List[Dict[str, str]],
+        func_spec: Optional[FunctionSpec],
+        chat_template_kwargs: Optional[Dict[str, Any]],
+    ) -> Optional[int]:
+        """Exact prompt size from the server's own tokenizer, or None.
+
+        Targets vLLM's `POST /tokenize`, which applies the served chat template
+        and returns both the token count and the model's `max_model_len`. The
+        endpoint is probed once; if it is missing the backend stops asking.
+        """
+        if self.use_azure_client or not _env_bool(REMOTE_TOKENIZE_ENV, True):
+            return None
+        if self._tokenize_available is False:
+            return None
+        url = self._tokenize_url()
+        if not url:
+            return None
+
+        payload: Dict[str, Any] = {
+            "model": self.served_model,
+            "messages": messages,
+            "add_generation_prompt": True,
+        }
+        if chat_template_kwargs:
+            payload["chat_template_kwargs"] = chat_template_kwargs
+        if func_spec is not None:
+            payload["tools"] = [{"type": "function", "function": func_spec.as_openai_tool_dict}]
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+
+        try:
+            response = httpx.post(url, json=payload, headers=headers, timeout=TOKENIZE_TIMEOUT)
+        except Exception as e:
+            logger.debug("Remote tokenize failed (%s); using local estimate.", e)
+            return None
+
+        if 400 <= response.status_code < 500 and response.status_code != 429:
+            # Not a vLLM-style server (404/405) or it rejects the request
+            # shape; a local estimate is used from now on.
+            self._tokenize_available = False
+            logger.info(
+                "Tokenize endpoint %s unavailable (HTTP %s); using local token estimates.",
+                url,
+                response.status_code,
+            )
+            return None
+        if response.status_code >= 300:
+            return None
+
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        count = body.get("count") if isinstance(body, dict) else None
+        if not isinstance(count, int) or count < 0:
+            return None
+        max_model_len = body.get("max_model_len")
+        if isinstance(max_model_len, int) and max_model_len > 0:
+            self._server_max_model_len = max_model_len
+        self._tokenize_available = True
+        return count
 
     def _estimate_prompt_tokens(
         self, messages: List[Dict[str, str]], func_spec: Optional[FunctionSpec]
@@ -292,6 +384,32 @@ class LiteLLMClient:
                 continue
         return None
 
+    def _count_prompt_tokens(
+        self,
+        messages: List[Dict[str, str]],
+        func_spec: Optional[FunctionSpec],
+        chat_template_kwargs: Optional[Dict[str, Any]],
+    ) -> Tuple[Optional[int], bool]:
+        """Return (prompt_tokens, exact). `exact` is False for local estimates."""
+        count = self._count_prompt_tokens_remote(messages, func_spec, chat_template_kwargs)
+        if count is not None:
+            return count, True
+        return self._estimate_prompt_tokens(messages, func_spec), False
+
+    @staticmethod
+    def _token_margin(prompt_tokens: int, exact: bool) -> int:
+        """Headroom to reserve above the prompt count.
+
+        An exact server-side count only needs the fixed margin. A local
+        estimate may come from a different tokenizer than the one serving the
+        model, so a proportional share of the prompt is reserved as well.
+        """
+        margin = _env_int(TOKEN_MARGIN_ENV, DEFAULT_TOKEN_MARGIN)
+        if not exact:
+            pct = _env_float(TOKEN_MARGIN_PCT_ENV, DEFAULT_TOKEN_MARGIN_PCT)
+            margin += int(math.ceil(prompt_tokens * max(pct, 0.0)))
+        return margin
+
     def _cap_max_tokens(
         self,
         filtered_kwargs: Dict[str, Any],
@@ -302,13 +420,16 @@ class LiteLLMClient:
         requested = filtered_kwargs.get("max_tokens")
         if not requested:
             return
+        extra_body = filtered_kwargs.get("extra_body")
+        chat_template_kwargs = (
+            extra_body.get("chat_template_kwargs") if isinstance(extra_body, dict) else None
+        )
+        # Count first: a server-side count may also reveal the context window.
+        prompt_tokens, exact = self._count_prompt_tokens(messages, func_spec, chat_template_kwargs)
         window = self._resolve_context_window()
-        if not window:
+        if not window or prompt_tokens is None:
             return
-        prompt_tokens = self._estimate_prompt_tokens(messages, func_spec)
-        if prompt_tokens is None:
-            return
-        margin = _env_int(TOKEN_MARGIN_ENV, DEFAULT_TOKEN_MARGIN)
+        margin = self._token_margin(prompt_tokens, exact)
         floor = _env_int(MIN_OUTPUT_TOKENS_ENV, DEFAULT_MIN_OUTPUT_TOKENS)
         budget = window - prompt_tokens - margin
         if budget >= requested:
@@ -318,10 +439,11 @@ class LiteLLMClient:
             return
         logger.warning(
             "Capping max_tokens %s -> %s to fit context window %s "
-            "(~%s prompt tokens, margin %s).",
+            "(%s%s prompt tokens, margin %s).",
             requested,
             new_max,
             window,
+            "" if exact else "~",
             prompt_tokens,
             margin,
         )
@@ -410,8 +532,13 @@ class LiteLLMClient:
 
         num_retries = _env_int(NUM_RETRIES_ENV, NUM_RETRIES)
         request_timeout = _env_float(TIMEOUT_ENV, TIMEOUT)
+        # `max_retries` is handled by the OpenAI SDK client, which retries
+        # connection errors, timeouts, 408/409/429 and 5xx with backoff and
+        # never a 400. litellm's own `num_retries` is deliberately NOT set: it
+        # re-sends every `openai.APIError` verbatim, so a context-window 400
+        # would be replayed `num_retries` times before the handler below could
+        # shrink `max_tokens`.
         filtered_kwargs["max_retries"] = num_retries
-        filtered_kwargs["num_retries"] = num_retries
         filtered_kwargs["request_timeout"] = httpx.Timeout(timeout=request_timeout)
 
         # Proactively fit the request inside the model's context window so the
