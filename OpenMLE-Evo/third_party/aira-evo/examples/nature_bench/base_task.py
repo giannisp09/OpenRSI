@@ -1551,7 +1551,11 @@ done
             # do not support symlinks and raise EOPNOTSUPP. The attempt's output
             # is already fully written by the time we get here, so fall back to
             # copying the workspace so the eval service can still read it.
-            shutil.copytree(attempt_workspace, link)
+            # Drive's FUSE mount has lazy exists() semantics, so the removal
+            # above may not have taken effect; dirs_exist_ok merges over any
+            # residual directory instead of raising FileExistsError.
+            shutil.rmtree(link, ignore_errors=True)
+            shutil.copytree(attempt_workspace, link, dirs_exist_ok=True)
 
     def _post_evaluate(self, output_dir: str | Path) -> dict[str, Any]:
         self._ensure_eval_service_registered()
