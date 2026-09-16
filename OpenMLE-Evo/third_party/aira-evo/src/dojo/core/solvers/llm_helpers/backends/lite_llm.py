@@ -7,6 +7,7 @@
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -26,6 +27,18 @@ TIMEOUT = 1500
 STREAM_ENV = "AIRA_LITELLM_STREAM"
 TIMEOUT_ENV = "AIRA_LITELLM_TIMEOUT"
 NUM_RETRIES_ENV = "AIRA_LITELLM_NUM_RETRIES"
+
+# Context-window handling. When the requested output (`max_tokens`) plus the
+# prompt would exceed the model's context window, the backend transparently
+# shrinks `max_tokens` to fit rather than letting the whole task abort with a
+# non-retryable ContextWindowExceededError.
+CONTEXT_WINDOW_ENVS = ("AIRA_LITELLM_CONTEXT_WINDOW", "AIRA_LITELLM_MODEL_MAX_LEN")
+TOKEN_MARGIN_ENV = "AIRA_LITELLM_TOKEN_MARGIN"  # reserved headroom for tokenizer drift
+MIN_OUTPUT_TOKENS_ENV = "AIRA_LITELLM_MIN_OUTPUT_TOKENS"  # never shrink output below this
+CONTEXT_RETRIES_ENV = "AIRA_LITELLM_CONTEXT_RETRIES"  # reactive retries on window errors
+DEFAULT_TOKEN_MARGIN = 128
+DEFAULT_MIN_OUTPUT_TOKENS = 512
+DEFAULT_CONTEXT_RETRIES = 4
 
 
 # Configure logging
@@ -238,6 +251,119 @@ class LiteLLMClient:
 
         return "".join(text_parts), usage_stats
 
+    def _resolve_context_window(self) -> Optional[int]:
+        """Best-effort lookup of the model's total context window (in tokens).
+
+        Prefers an explicit env override (useful for self-hosted models that
+        litellm does not know about), then falls back to litellm's registry.
+        Returns None when the window cannot be determined.
+        """
+        for env_name in CONTEXT_WINDOW_ENVS:
+            raw = os.getenv(env_name)
+            if raw:
+                try:
+                    return int(raw)
+                except ValueError:
+                    logger.warning("Ignoring non-integer %s=%r", env_name, raw)
+        try:
+            info = litellm.get_model_info(self.model) or {}
+        except Exception:
+            info = {}
+        for key in ("max_input_tokens", "max_tokens"):
+            value = info.get(key)
+            if value:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    pass
+        return None
+
+    def _estimate_prompt_tokens(
+        self, messages: List[Dict[str, str]], func_spec: Optional[FunctionSpec]
+    ) -> Optional[int]:
+        """Approximate the prompt token count (tools included when possible)."""
+        tools = [func_spec.as_openai_tool_dict] if func_spec is not None else None
+        for kwargs in ({"tools": tools}, {}):
+            try:
+                return int(
+                    litellm.token_counter(model=self.model, messages=messages, **kwargs)
+                )
+            except Exception:
+                continue
+        return None
+
+    def _cap_max_tokens(
+        self,
+        filtered_kwargs: Dict[str, Any],
+        messages: List[Dict[str, str]],
+        func_spec: Optional[FunctionSpec],
+    ) -> None:
+        """Proactively shrink `max_tokens` so prompt + output fits the window."""
+        requested = filtered_kwargs.get("max_tokens")
+        if not requested:
+            return
+        window = self._resolve_context_window()
+        if not window:
+            return
+        prompt_tokens = self._estimate_prompt_tokens(messages, func_spec)
+        if prompt_tokens is None:
+            return
+        margin = _env_int(TOKEN_MARGIN_ENV, DEFAULT_TOKEN_MARGIN)
+        floor = _env_int(MIN_OUTPUT_TOKENS_ENV, DEFAULT_MIN_OUTPUT_TOKENS)
+        budget = window - prompt_tokens - margin
+        if budget >= requested:
+            return
+        new_max = max(floor, budget)
+        if new_max >= requested:
+            return
+        logger.warning(
+            "Capping max_tokens %s -> %s to fit context window %s "
+            "(~%s prompt tokens, margin %s).",
+            requested,
+            new_max,
+            window,
+            prompt_tokens,
+            margin,
+        )
+        filtered_kwargs["max_tokens"] = new_max
+
+    @staticmethod
+    def _parse_context_error(message: str) -> Tuple[Optional[int], Optional[int]]:
+        """Extract (context_window, prompt_tokens) from a provider error string."""
+        window = None
+        prompt_tokens = None
+        m = re.search(r"maximum context length is (\d+)", message)
+        if m:
+            window = int(m.group(1))
+        m = re.search(r"prompt contains at least (\d+)", message)
+        if not m:
+            # Alternate OpenAI/vLLM phrasings.
+            m = re.search(r"(?:messages? resulted in|you requested)\D*(\d+)\s+(?:input )?tokens", message)
+        if m:
+            prompt_tokens = int(m.group(1))
+        return window, prompt_tokens
+
+    def _shrink_max_tokens_from_error(
+        self, message: str, current_max: Optional[int]
+    ) -> Optional[int]:
+        """Compute a max_tokens that fits, using counts the server reported.
+
+        Returns None when the error is unparseable, when even the minimum
+        output would not fit (prompt itself too large), or when shrinking would
+        not actually reduce the current value.
+        """
+        window, prompt_tokens = self._parse_context_error(message)
+        if not window or not prompt_tokens:
+            return None
+        margin = _env_int(TOKEN_MARGIN_ENV, DEFAULT_TOKEN_MARGIN)
+        floor = _env_int(MIN_OUTPUT_TOKENS_ENV, DEFAULT_MIN_OUTPUT_TOKENS)
+        budget = window - prompt_tokens - margin
+        if budget < floor:
+            return None
+        if current_max is not None and budget >= current_max:
+            return None
+        return budget
+
     def _query_client(
         self,
         messages: List[Dict[str, str]],
@@ -288,6 +414,10 @@ class LiteLLMClient:
         filtered_kwargs["num_retries"] = num_retries
         filtered_kwargs["request_timeout"] = httpx.Timeout(timeout=request_timeout)
 
+        # Proactively fit the request inside the model's context window so the
+        # prompt plus requested output never overflows it.
+        self._cap_max_tokens(filtered_kwargs, messages, func_spec)
+
         # Record start time for latency measurement
         start_time = time.monotonic()
 
@@ -295,29 +425,57 @@ class LiteLLMClient:
         completion = None
         output = None
         usage_stats: dict[str, Any] = {}
-        try:
-            completion = completion_fn(messages=messages, **filtered_kwargs)
+
+        def _run_completion() -> tuple[Any, Any, dict[str, Any]]:
+            comp = completion_fn(messages=messages, **filtered_kwargs)
+            out = None
+            stats: dict[str, Any] = {}
             if use_stream:
-                output, usage_stats = self._consume_stream(completion)
-        except litellm.BadRequestError as e:
-            if "function calling" in str(e).lower() or "functions" in str(e).lower():
-                logger.warning(
-                    "Function calling was attempted but is not supported by this model. "
-                    "Falling back to plain text generation."
+                out, stats = self._consume_stream(comp)
+            return comp, out, stats
+
+        max_ctx_retries = _env_int(CONTEXT_RETRIES_ENV, DEFAULT_CONTEXT_RETRIES)
+        ctx_attempts = 0
+        while True:
+            try:
+                completion, output, usage_stats = _run_completion()
+                break
+            except litellm.ContextWindowExceededError as e:
+                # Reactive fit: the server reported the exact prompt/window
+                # sizes, so shrink max_tokens to match rather than aborting.
+                new_max = self._shrink_max_tokens_from_error(
+                    str(e), filtered_kwargs.get("max_tokens")
                 )
-                # Remove function calling parameters and retry
-                filtered_kwargs.pop("functions", None)
-                filtered_kwargs.pop("function_call", None)
-                use_stream = self._should_stream(filtered_kwargs, None)
-                if use_stream:
-                    filtered_kwargs["stream"] = True
-                    if include_usage:
-                        filtered_kwargs.setdefault("stream_options", {"include_usage": True})
-                completion = completion_fn(messages=messages, **filtered_kwargs)
-                if use_stream:
-                    output, usage_stats = self._consume_stream(completion)
-            else:
-                raise
+                ctx_attempts += 1
+                if new_max is None or ctx_attempts > max_ctx_retries:
+                    raise
+                logger.warning(
+                    "Context window exceeded; retrying with reduced "
+                    "max_tokens=%s (attempt %s/%s).",
+                    new_max,
+                    ctx_attempts,
+                    max_ctx_retries,
+                )
+                filtered_kwargs["max_tokens"] = new_max
+                continue
+            except litellm.BadRequestError as e:
+                if "function calling" in str(e).lower() or "functions" in str(e).lower():
+                    logger.warning(
+                        "Function calling was attempted but is not supported by this model. "
+                        "Falling back to plain text generation."
+                    )
+                    # Remove function calling parameters and retry
+                    filtered_kwargs.pop("functions", None)
+                    filtered_kwargs.pop("function_call", None)
+                    use_stream = self._should_stream(filtered_kwargs, None)
+                    if use_stream:
+                        filtered_kwargs["stream"] = True
+                        if include_usage:
+                            filtered_kwargs.setdefault("stream_options", {"include_usage": True})
+                    completion, output, usage_stats = _run_completion()
+                    break
+                else:
+                    raise
 
         # Calculate latency
         latency = time.monotonic() - start_time
