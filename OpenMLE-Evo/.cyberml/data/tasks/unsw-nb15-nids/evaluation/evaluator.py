@@ -66,9 +66,44 @@ def load_and_validate(instance_name):
     return preds
 
 
-def calculate_metrics(predictions, ground_truth):
+def _eval_slice_indices(instance_name, n_rows):
+    """Row indices to score for this instance under the active holdout slice.
+
+    Returns None (score every row -- the original behaviour) unless a committed
+    ``evaluation/holdout_split.json`` exists. The env var ``CYBERML_EVAL_SLICE``
+    selects the side:
+      'score' (default): the selection slice the search optimises (holdout removed)
+      'final'          : the untouched holdout slice (scored once, offline)
+      'all'            : every row (back-compat / anchor recomputation)
+    Labels for the 'final' rows never enter the 'score' metric, so the search
+    never selects on them. See tools/make_holdout_splits.py."""
+    slice_sel = os.environ.get("CYBERML_EVAL_SLICE", "score")
+    if slice_sel == "all":
+        return None
+    split_path = os.path.join(EVAL_DIR, "holdout_split.json")
+    if not os.path.exists(split_path):
+        return None
+    try:
+        with open(split_path) as fh:
+            spec = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    inst = (spec.get("instances", {}) or {}).get(instance_name, {}) or {}
+    final_idx = inst.get("final_idx")
+    if not final_idx:
+        return None
+    final = set(int(i) for i in final_idx)
+    want_final = slice_sel == "final"
+    return [i for i in range(n_rows) if (i in final) == want_final]
+
+
+def calculate_metrics(predictions, ground_truth, instance_name="main"):
     y_true = ground_truth["label"].values.astype(int)
     y_pred = predictions[PRED_COL].values.astype(int)
+    idx = _eval_slice_indices(instance_name, len(y_true))
+    if idx:  # non-empty slice; None or [] -> score every row
+        y_true = y_true[idx]
+        y_pred = y_pred[idx]
     f1 = float(f1_score(y_true, y_pred, pos_label=1, zero_division=0))
     return {"Detection F1-Score": round(f1, 6)}
 
@@ -81,7 +116,7 @@ def run_evaluation():
             predictions = load_and_validate(instance_name)
             gt = pd.read_csv(
                 os.path.join(GROUND_TRUTH_DIR, instance_name, "y_ref.csv"))
-            scores = calculate_metrics(predictions, gt)
+            scores = calculate_metrics(predictions, gt, instance_name)
             results[instance_name] = scores
             print(f"Results: {scores}")
         except ValidationError as e:

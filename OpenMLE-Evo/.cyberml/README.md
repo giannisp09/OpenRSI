@@ -58,6 +58,9 @@ constraint explicitly.
   tools/prepare_tuandromd_android.py # download TUANDROMD, build the task
   tools/selfcheck.py                # offline verifier proof (no model / no NatureBench)
   tools/test_local_eval_service.py  # offline test of the local eval service
+  tools/make_holdout_splits.py      # carve a stratified untouched-holdout slice per task
+  tools/test_holdout_split.py       # prove the holdout is isolated from the search
+  tools/score_holdout.py            # re-score a run's winner on the untouched holdout
   tools/measure_improvement.py      # per-task + overall improvement across runs
   local_naturebench/                # self-contained eval service (no external repo)
     eval_service.py                 # /health /register /start_timer /evaluate
@@ -89,7 +92,16 @@ uv run python OpenMLE-Evo/.cyberml/tools/prepare_clamp_malware.py    # ClaMP PE 
 uv run python OpenMLE-Evo/.cyberml/tools/prepare_tuandromd_android.py # TUANDROMD Android
 uv run python OpenMLE-Evo/.cyberml/tools/selfcheck.py               # verifier -> SELF-CHECK: PASS
 uv run python OpenMLE-Evo/.cyberml/tools/test_local_eval_service.py  # eval svc -> EVAL-SERVICE TEST: PASS
+uv run python OpenMLE-Evo/.cyberml/tools/make_holdout_splits.py     # carve untouched holdout slices
+uv run python OpenMLE-Evo/.cyberml/tools/test_holdout_split.py     # holdout isolation -> HOLDOUT-SPLIT TEST: PASS
 ```
+
+The `holdout_split.json` files are committed, so this only needs re-running if you
+change the fraction or seed. **Until they exist the evaluator scores every test
+row (exactly the original behaviour), so generating them is opt-in and older runs
+stay reproducible.** Once present, the live search scores only the *score* slice
+(`CYBERML_EVAL_SLICE=score`, the default); the disjoint *final* slice is reserved
+for `tools/score_holdout.py` — see "Untouched holdout" below.
 
 `selfcheck.py` runs the starter as a "good" submission, plus an all-zero and a
 malformed submission, and asserts the verifier scores/rejects each correctly
@@ -267,6 +279,63 @@ task is available on the next:
   $MODEL_FLAGS \
   -- search.runner.solver.step_limit=15
 ```
+
+## Multiple seeds (mean ± std, error bars)
+
+One run is one sample — the LLM samples operators stochastically, so a single
+number has no error bar. `scripts/run_seeds.py` launches the same run once per
+seed into `output/<base>_seed<k>` with the Hydra override `seed=<k>`; everything
+after `--` is forwarded verbatim to `run_naturebench_local.py`:
+
+```bash
+.venv/bin/python scripts/run_seeds.py --base-name cyberml_nsl --seeds 1 2 3 -- \
+  --naturebench-repo .cyberml/local_naturebench \
+  --local-python .venv/bin/python \
+  --data-dir .cyberml/data --skip-download --task nsl-kdd-nids \
+  $MODEL_FLAGS \
+  -- search.runner.solver.step_limit=25
+```
+
+`make_paper_report.py` / `measure_improvement.py` then aggregate the repeats
+automatically — the `mean_across_runs` / `std_across_runs` columns and the
+bar-chart error bars come from exactly these directories. Add `--dry-run` to print
+the per-seed commands first.
+
+## Untouched holdout — does the winner generalize, or overfit the scored set?
+
+Selecting the best of N search nodes by the verifier's F1 is N adaptive queries
+against one hidden test set, so the winner *could* be overfit to it. To make
+"closed X% of the gap" defensible, each task's test set is split (stratified) into
+a **score** slice the search selects on and a disjoint **final** slice the live
+metric never returns:
+
+```bash
+uv run python OpenMLE-Evo/.cyberml/tools/make_holdout_splits.py     # writes evaluation/holdout_split.json (committed)
+uv run python OpenMLE-Evo/.cyberml/tools/test_holdout_split.py     # proves flipping every final-row prediction leaves the score metric unchanged
+```
+
+The evaluator reads `CYBERML_EVAL_SLICE` (default `score`): the search never sees
+the final slice, so it cannot select on it. After a run, re-score the winning
+program **once** on the untouched slice (median over `--repeats` re-fits, so the
+held-out number carries its own variance, and the score-slice figure of the same
+fits gives the val→holdout gap):
+
+```bash
+.venv/bin/python OpenMLE-Evo/.cyberml/tools/score_holdout.py \
+  --task nsl-kdd-nids \
+  --run-dir OpenMLE-Evo/output/<run> \
+  --local-python OpenMLE-Evo/.venv/bin/python \
+  --repeats 3
+# writes holdout_results.json next to the winning program; make_paper_report.py
+# then adds an "Untouched holdout" section + tables/holdout.csv.
+```
+
+A small positive val→holdout gap is honest generalization; a large gap flags
+overfitting to the scored slice. This is a **transductive** holdout (the final
+rows' *features* are visible to the candidate; only their *labels* are withheld
+from selection), which already closes the adaptive-overfitting objection; a fully
+inductive holdout (features hidden too) is the natural next step and reuses the
+same tools.
 
 ## Measuring improvement — per task and overall
 

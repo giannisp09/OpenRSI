@@ -240,6 +240,29 @@ def _raw_primary(raw_scores: dict, inst: str) -> float | None:
     return None
 
 
+def _recover_best(bn: dict, inst: str, anchors: dict,
+                  fallback_norm: float | None = None) -> float | None:
+    """Best node's raw primary score for one instance.
+
+    Prefer the recorded ``raw_scores``. Some runs log
+    ``per_instance_improvement`` (or only the scalar ``aggregate_improvement``
+    for a single-instance task) but an empty ``raw_scores`` — which used to
+    surface as an em-dash in the ``mean_best``/``best`` columns. Since
+    ``norm = (raw - baseline) / (sota - baseline)`` exactly, reconstruct the raw
+    score from the anchors, so the column is populated whenever the node scored
+    at all."""
+    raw = _raw_primary(bn["raw_scores"], inst)
+    if raw is not None:
+        return raw
+    norm = _f((bn["per_instance_improvement"] or {}).get(inst))
+    if norm is None:
+        norm = fallback_norm
+    base, sota = anchors.get("baseline"), anchors.get("sota")
+    if norm is not None and base is not None and sota is not None:
+        return base + norm * (sota - base)
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # Per-task aggregation                                                         #
 # --------------------------------------------------------------------------- #
@@ -305,8 +328,10 @@ def build(output_dir: Path, all_tasks: bool, price_in, price_out) -> dict:
         # per-instance table rows from the best node
         insts = []
         base_vals, best_vals, sota_vals = [], [], []
+        # single-instance tasks: aggregate_improvement IS the instance norm
+        _fallback_norm = bn["agg"] if len(meta["instances"]) == 1 else None
         for inst, anchors in meta["instances"].items():
-            best_score = _raw_primary(bn["raw_scores"], inst)
+            best_score = _recover_best(bn, inst, anchors, _fallback_norm)
             insts.append({
                 "instance": inst,
                 "baseline": anchors["baseline"],
@@ -347,6 +372,7 @@ def build(output_dir: Path, all_tasks: bool, price_in, price_out) -> dict:
             "n_runs": len(runs),
             "run": best_run["run"],
             "journal": str(best_run["journal"]),
+            "holdout": _load_holdout(str(best_run["journal"])),
             "mean_baseline": _mean(base_vals),
             "mean_best": _mean(best_vals),
             "mean_sota": _mean(sota_vals),
@@ -371,6 +397,19 @@ def build(output_dir: Path, all_tasks: bool, price_in, price_out) -> dict:
 
 def _mean(xs):
     return (sum(xs) / len(xs)) if xs else None
+
+
+def _load_holdout(journal_path: str) -> dict | None:
+    """holdout_results.json (from tools/score_holdout.py) lives next to the
+    winning program: <...>/program_ep_*/<task>/holdout_results.json, i.e. three
+    parents up from the journal. Returns the parsed dict or None."""
+    try:
+        hp = Path(journal_path).parents[2] / "holdout_results.json"
+        if hp.is_file():
+            return json.loads(hp.read_text(encoding="utf-8"))
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -471,6 +510,27 @@ def write_tables(summary: dict, tdir: Path) -> None:
                         tt["reasoning_tokens"], tt["total_tokens"],
                         _n(tt["exec_time"], 1), _n(tt["wall"] / 60, 1),
                         _n(tt["cost"], 4)])
+
+    # holdout.csv -- untouched-holdout generalization (only tasks scored offline)
+    holdout_tasks = [t for t in summary["tasks"] if t.get("holdout")]
+    if holdout_tasks:
+        with (tdir / "holdout.csv").open("w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["task_id", "frac_final", "repeats",
+                        "score_slice_improvement", "final_slice_improvement",
+                        "val_to_holdout_gap", "instance", "final_f1_median",
+                        "final_f1_iqr", "score_f1_median"])
+            for t in holdout_tasks:
+                h = t["holdout"]
+                for inst, hi in (h.get("per_instance") or {}).items():
+                    w.writerow([
+                        t["task_id"], _n(h.get("split"), 3), h.get("repeats"),
+                        _n(h.get("aggregate_score_improvement")),
+                        _n(h.get("aggregate_final_improvement")),
+                        _n(h.get("val_to_holdout_gap")), inst,
+                        _n(hi.get("final_f1_median")), _n(hi.get("final_f1_iqr")),
+                        _n(hi.get("score_f1_median")),
+                    ])
 
     # LaTeX (booktabs) for the two headline tables
     _write_latex_main(summary, tdir / "main_results.tex")
@@ -904,6 +964,51 @@ def write_report(summary: dict, args, made_figs, path: Path) -> None:
     if len(tasks) >= 2:
         lines += ["![All trajectories](plots/trajectory_all.png)", ""]
 
+    holdout_tasks = [t for t in tasks if t.get("holdout")]
+    if holdout_tasks:
+        fin = [t["holdout"]["aggregate_final_improvement"] for t in holdout_tasks
+               if t["holdout"].get("aggregate_final_improvement") is not None]
+        mean_fin = (sum(fin) / len(fin)) if fin else None
+        lines += [
+            "### Untouched holdout — does the winner generalize, or overfit the "
+            "scored set?",
+            "",
+            "Selecting the best of N search nodes by the verifier's F1 is N adaptive "
+            "queries against one hidden test set, so the winner could be overfit to "
+            "it. To rule that out, each task's test set is split (stratified) into a "
+            "**score** slice the search selects on and a disjoint **final** slice the "
+            "live metric never returns (`tools/make_holdout_splits.py`; isolation "
+            "proven by `tools/test_holdout_split.py`). After the run the winning "
+            "program is re-fit and scored **once** on the untouched final slice "
+            "(`tools/score_holdout.py`, median over repeats).",
+            "",
+        ]
+        if mean_fin is not None:
+            lines += [
+                f"Mean normalized improvement on the **untouched holdout**: "
+                f"**{_n(mean_fin,3)}** across {len(fin)} task(s) — the defensible "
+                f"generalization number (vs the score-slice figure the search "
+                f"optimized).",
+                "",
+            ]
+        hrows = [
+            [t["task_id"],
+             _n(t["holdout"].get("aggregate_score_improvement"), 3),
+             _n(t["holdout"].get("aggregate_final_improvement"), 3),
+             _n(t["holdout"].get("val_to_holdout_gap"), 3),
+             t["holdout"].get("repeats")]
+            for t in holdout_tasks
+        ]
+        lines += [
+            _md_table(["Task", "Score-slice impr.", "Holdout impr.",
+                       "val→holdout gap", "Repeats"], hrows),
+            "",
+            "A small positive gap is honest generalization; a large gap flags "
+            "overfitting to the scored slice. Full per-instance held-out F1 "
+            "(median±IQR) is in `tables/holdout.csv`.",
+            "",
+        ]
+
     lines += [
         "## 3. What drove the gains — operator effectiveness",
         "",
@@ -977,10 +1082,16 @@ def write_report(summary: dict, args, made_figs, path: Path) -> None:
         "- Baseline and SOTA anchors are fixed per task; aggregate improvement is "
         "relative to them, not an absolute leaderboard claim.",
         "- Runs reported here are the best per task; for statistical claims, launch "
-        "multiple seeds (repeat the run) — the `mean_across_runs`/`std_across_runs` "
-        "columns in `main_results.csv` populate automatically when >1 run exists.",
+        "multiple seeds with `scripts/run_seeds.py` — the "
+        "`mean_across_runs`/`std_across_runs` columns in `main_results.csv` and the "
+        "bar-chart error bars populate automatically when >1 run exists.",
+        "- The score-slice figures are what the search optimized; the untouched-"
+        "holdout figures (when present) are the generalization claim. A task without "
+        "a `holdout_results.json` has not yet been re-scored on its held-out slice "
+        "(`tools/score_holdout.py`).",
         "- All tasks are supervised classifiers with hidden-label F1 verifiers; "
-        "offensive/CTF tasks are out of scope here by design.",
+        "offensive/CTF tasks (the `ctf_gym/` next step) are out of scope here by "
+        "design.",
         "",
         "---",
         "_Tables: `tables/*.csv`, `tables/*.tex` (booktabs). Figures: "
